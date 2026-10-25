@@ -34,12 +34,12 @@ Win rates measured during training (400 evaluation games, colours alternating):
 py -3.12 -m venv .venv
 .\.venv\Scripts\activate
 pip install -r requirements.txt
-python app.py                       # open http://127.0.0.1:5000
+python app.py                       # open http://127.0.0.1:8002
 ```
 
 Trained weights are in `weights/`, so you can play immediately without training.
 
-> `requirements.txt` installs PyTorch built for CUDA 12.8 (needed for RTX 50-series cards). On a CPU-only machine or server, remove the `--extra-index-url` line, or install the CPU wheel from `https://download.pytorch.org/whl/cpu`.
+> `requirements.txt` installs the CPU build of PyTorch, which is all a server needs. `requirements-gpu.txt` installs the CUDA 12.8 build (needed for RTX 50-series cards) for fast training.
 
 ## Playing
 
@@ -85,7 +85,7 @@ On an RTX 5070, DQN alone ran at ~17 games/s; all five algorithms with `--parall
 ### Training monitor
 
 ```powershell
-python monitor.py                   # opens http://127.0.0.1:5000/monitor
+python monitor.py                   # opens http://127.0.0.1:8002/monitor
 ```
 
 - Start / stop training from the page (algorithms, GPU or CPU, number of games, parallel, resume, amp)
@@ -118,17 +118,17 @@ Use the CPU build of PyTorch, run with `--device cpu`, set `ENABLE_TRAINING_MONI
 
 ### Deploy with Dokploy (GitHub + Docker)
 
-The repo includes a `Dockerfile` (CPU-only PyTorch, gunicorn on port 8000) and `requirements-server.txt`.
+The repo includes a `Dockerfile` (CPU-only PyTorch, gunicorn on port 8002) and `requirements-server.txt`.
 
 1. Push the repo to GitHub, including `weights/*.pt` (the `*_last.pt` checkpoints are git-ignored).
 2. In Dokploy create an **Application**, choose **GitHub** as the source, select the repository and branch, and set **Build Type** to `Dockerfile`.
-3. Under **Domains** add your domain with container port `8000`.
+3. Under **Domains** add your domain with container port `8002`.
    The image is tuned for a 4-core / 4 GB host such as an i5-6500: 3 gunicorn workers (`WEB_CONCURRENCY`) with one torch thread each. Dokploy itself uses about 1 GB, so leave `WEB_CONCURRENCY` at 3 or lower.
 4. Under **Environment** you can override `MINIMAX_DEPTH`, `ALPHABETA_DEPTH` (the image defaults to 3 and 5) — keep `ENABLE_TRAINING_MONITOR=false`.
 5. Enable **Auto Deploy** so each push to the branch redeploys (this uses the Dokploy GitHub App, no extra setup).
 
 
-Test the image locally with `docker build -t othello-rl .` and `docker run -p 8000:8000 othello-rl`.
+Test the image locally with `docker build -t othello-rl .` and `docker run -p 8002:8002 othello-rl`.
 
 ## Classic search opponents
 

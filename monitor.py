@@ -1,7 +1,7 @@
 """Training monitor GUI: opens the dashboard in your browser.
 
-    python monitor.py                 # http://127.0.0.1:5000/monitor
-    python monitor.py --port 8000
+    python monitor.py                 # http://127.0.0.1:8002/monitor
+    python monitor.py --port 8002
 
 Start / stop training from the page, or run training.py in another terminal:
 the dashboard reads logs/<algo>_status.json and logs/<algo>.jsonl either way.

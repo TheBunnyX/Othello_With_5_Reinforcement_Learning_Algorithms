@@ -1,6 +1,7 @@
-# Generated with: .venv\Scripts\Activate.ps1 ; pip freeze
-# torch is a CUDA 12.8 build (+cu128), served from the PyTorch index below.
---extra-index-url https://download.pytorch.org/whl/cu128
+# CPU-only setup (default, also used by servers):  pip install -r requirements.txt
+# For GPU training use requirements-gpu.txt instead.
+# torch is the CPU build, served from the PyTorch index below.
+--extra-index-url https://download.pytorch.org/whl/cpu
 
 blinker==1.9.0
 click==8.5.0
@@ -21,6 +22,6 @@ Pygments==2.21.0
 pytest==9.1.1
 setuptools==78.1.0
 sympy==1.14.0
-torch==2.11.0+cu128
+torch==2.11.0+cpu
 typing_extensions==4.16.0
 Werkzeug==3.1.9

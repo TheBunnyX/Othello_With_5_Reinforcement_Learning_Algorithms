@@ -1,7 +1,7 @@
 """Web app: play Othello against the trained weights, and monitor / control training.
 
-    python app.py                      # http://127.0.0.1:5000  (play)   /monitor (training GUI)
-    python app.py --device cuda --port 8000
+    python app.py                      # http://127.0.0.1:8002  (play)   /monitor (training GUI)
+    python app.py --device cuda --port 8002
 
 The game API is stateless: the browser sends the board with every request.
 The monitor reads logs/<algo>_status.json and logs/<algo>.jsonl written by training.py.
@@ -411,7 +411,7 @@ def bad_request(e):
     return notice_page(e.code, "Request error", str(e.description))
 
 
-def make_parser(default_port: int = 5000) -> argparse.ArgumentParser:
+def make_parser(default_port: int = 8002) -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Othello RL web app")
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=default_port)
