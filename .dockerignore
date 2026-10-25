@@ -1,0 +1,12 @@
+.venv
+__pycache__
+.git
+.env
+logs
+docs
+weights/*_last.pt
+Screenshot*.png
+*.md
+test.py
+test.txt
+tournament_output.txt

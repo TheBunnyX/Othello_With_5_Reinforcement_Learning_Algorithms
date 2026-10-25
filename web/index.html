@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Othello RL Arena</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="layout">
+    <section class="stage">
+      <header class="masthead">
+        <h1>Othello <em>RL</em> Arena</h1>
+        <p class="tagline">Play Othello against agents trained with reinforcement learning</p>
+        <a class="navlink" id="nav-monitor" href="/monitor" hidden>Training Monitor →</a>
+      </header>
+
+      <div class="scorebar">
+        <div class="side" id="side-black">
+          <span class="chip black"></span>
+          <div><div class="who" id="name-black">You</div><div class="count" id="count-black">2</div></div>
+        </div>
+        <div class="status" id="status">Loading…</div>
+        <div class="side right" id="side-white">
+          <div><div class="who" id="name-white">AI</div><div class="count" id="count-white">2</div></div>
+          <span class="chip white"></span>
+        </div>
+      </div>
+
+      <div class="frame">
+        <div class="coords cols"><span>a</span><span>b</span><span>c</span><span>d</span><span>e</span><span>f</span><span>g</span><span>h</span></div>
+        <div class="coords rows"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span></div>
+        <div class="board" id="board" role="grid" aria-label="Othello board"></div>
+      </div>
+      <div class="toast" id="toast" aria-live="polite"></div>
+    </section>
+
+    <aside class="panel">
+      <div class="card">
+        <h2>Opponent (model)</h2>
+        <div class="models" id="models"></div>
+      </div>
+
+      <div class="card">
+        <h2>Your colour</h2>
+        <div class="seg" id="color-seg">
+          <button data-color="1" class="active"><span class="chip black sm"></span> Black (first)</button>
+          <button data-color="-1"><span class="chip white sm"></span> White</button>
+        </div>
+        <div class="actions">
+          <button class="primary" id="btn-new">New game</button>
+          <button id="btn-undo">Undo</button>
+        </div>
+        <label class="toggle"><input type="checkbox" id="chk-hint"> <span>Show model hints</span></label>
+      </div>
+
+      <div class="card">
+        <h2>AI evaluation</h2>
+        <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+        <div class="meter-label"><span>You ahead</span><span id="meter-text">—</span><span>AI ahead</span></div>
+        <div class="meter-info" id="meter-info"></div>
+      </div>
+
+      <div class="card grow">
+        <h2>Move log</h2>
+        <ol class="log" id="log"></ol>
+      </div>
+    </aside>
+  </main>
+  <script src="/static/app.js"></script>
+</body>
+</html>

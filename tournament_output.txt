@@ -1,0 +1,6 @@
+﻿
+Win rate (draw = 0.5), colours alternate: 400 games per pairing, 10 when a search agent plays
+
+agent               random       greedy    minimax:3  alphabeta:5          a2c         ddqn          dqn          ppo    reinforce
+----------------------------------------------------------------------------------------------------------------------------------
+minimax:3           100.0%        85.0%            -        30.0%       100.0%        40.0%       100.0%        80.0%        80.0%

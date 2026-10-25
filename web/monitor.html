@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Training Monitor</title>
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700;800&family=Noto+Sans+Thai:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/monitor.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">Othello <em>RL</em></a>
+    <nav class="nav">
+      <a href="/">Play</a>
+      <a href="/monitor" class="active">Training Monitor</a>
+    </nav>
+    <div class="live" id="live"><span class="dot"></span><span id="live-text">Connecting…</span></div>
+  </header>
+
+  <main class="mon">
+    <section class="mon-top">
+      <div class="card control">
+        <h2>Start training</h2>
+        <div class="algo-checks" id="algo-checks"></div>
+        <div class="form-grid">
+          <label>Device
+            <select id="f-device">
+              <option value="cuda">GPU (CUDA)</option>
+              <option value="cpu">CPU</option>
+              <option value="auto">Auto</option>
+            </select>
+          </label>
+          <label>Games per algorithm
+            <input id="f-games" type="number" value="50000" min="100" step="1000">
+          </label>
+          <label>Parallel games (n-envs)
+            <input id="f-envs" type="number" min="1" placeholder="default">
+          </label>
+        </div>
+        <div class="flags">
+          <label class="toggle"><input type="checkbox" id="f-parallel" checked> <span>Train simultaneously (--parallel)</span></label>
+          <label class="toggle"><input type="checkbox" id="f-resume"> <span>Resume previous run (--resume)</span></label>
+          <label class="toggle"><input type="checkbox" id="f-amp"> <span>Mixed precision (--amp)</span></label>
+        </div>
+        <div class="actions">
+          <button class="primary" id="btn-start">▶ Start training</button>
+          <button id="btn-stop" class="danger">■ Stop</button>
+        </div>
+        <p class="cmd" id="cmd"></p>
+      </div>
+
+      <div class="card system">
+        <h2>System</h2>
+        <div class="gpu-name" id="gpu-name">—</div>
+        <div class="tiles">
+          <div class="tile"><div class="tile-label">GPU utilisation</div><div class="tile-value" id="t-util">—</div><div class="bar"><div id="b-util"></div></div></div>
+          <div class="tile"><div class="tile-label">VRAM</div><div class="tile-value" id="t-mem">—</div><div class="bar"><div id="b-mem"></div></div></div>
+          <div class="tile"><div class="tile-label">Temperature / power</div><div class="tile-value" id="t-temp">—</div></div>
+          <div class="tile"><div class="tile-label">Total throughput</div><div class="tile-value" id="t-speed">—</div><div class="tile-sub">games / second</div></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="algo-grid" id="algo-cards"></section>
+
+    <section class="charts">
+      <div class="card chart-card">
+        <h2>Win rate vs Greedy</h2>
+        <div class="chart-box"><canvas id="c-greedy" aria-label="Win rate against the greedy baseline"></canvas></div>
+      </div>
+      <div class="card chart-card">
+        <h2>Win rate vs Random</h2>
+        <div class="chart-box"><canvas id="c-random" aria-label="Win rate against the random baseline"></canvas></div>
+      </div>
+      <div class="card chart-card">
+        <h2>Training speed (games / second)</h2>
+        <div class="chart-box"><canvas id="c-speed" aria-label="Training throughput"></canvas></div>
+      </div>
+      <div class="card chart-card">
+        <div class="chart-head">
+          <h2>Training metrics</h2>
+          <div class="selects">
+            <select id="metric-algo" aria-label="Algorithm"></select>
+            <select id="metric-name" aria-label="Metric"></select>
+          </div>
+        </div>
+        <div class="chart-box"><canvas id="c-metric" aria-label="Training metric"></canvas></div>
+      </div>
+    </section>
+
+    <section class="mon-bottom">
+      <div class="card replay">
+        <div class="chart-head">
+          <h2>Latest evaluation game</h2>
+          <div class="selects"><select id="replay-algo" aria-label="Algorithm"></select></div>
+        </div>
+        <div class="replay-body">
+          <div class="mini-board" id="mini-board"></div>
+          <div class="replay-side">
+            <p class="replay-caption" id="replay-caption">No data yet</p>
+            <div class="replay-score" id="replay-score"></div>
+            <div class="replay-controls">
+              <button id="rp-play" aria-label="Play">▶</button>
+              <input type="range" id="rp-slider" min="0" max="0" value="0" aria-label="Move">
+            </div>
+            <div class="replay-ply" id="replay-ply"></div>
+          </div>
+        </div>
+      </div>
+      <div class="card console-card">
+        <h2>Console</h2>
+        <pre class="console" id="console">No training started from this page yet</pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <script src="/static/monitor.js"></script>
+</body>
+</html>
