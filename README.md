@@ -8,6 +8,8 @@ Play Othello against agents trained with **five reinforcement learning algorithm
 
 - **5 RL agents** trained from scratch by self-play with a shared ResNet policy/value network
 - **Minimax and Alpha-Beta** opponents with adjustable search depth
+- **Tree search on top of the networks**: MCTS (PUCT) guided by a trained net plus an exact endgame solver. `ddqn+mcts` beats Alpha-Beta depth 5 in 95% of games, against 55% for the plain network (see Strength benchmark)
+- **AlphaZero training** (`alphazero.py`): MCTS self-play with a replay buffer, symmetry augmentation, gating, an older-snapshot league and exact endgame labels
 - **Web app** (Flask): pick an opponent and your colour, see legal moves, undo, show model hints (per-move scores)
 - **Fast training**: vectorised numpy bitboard environment (6,000–12,000 games/s), GPU replay buffer, all algorithms trainable in parallel
 - **Live training monitor**: progress, win-rate curves, GPU stats and evaluation-game replay
@@ -77,7 +79,8 @@ python training.py --algo dqn --games 200000 --resume      # continue a previous
 | One process per algorithm | `--parallel` | Better GPU / CPU utilisation |
 | Replay buffer kept on the GPU (DQN) | automatic | No CPU→GPU copy per batch |
 | Fused Adam, cudnn.benchmark, fewer syncs | automatic on CUDA | ~20% |
-| bf16 mixed precision | `--amp` | Off by default: slower for this small network on an RTX 5070 |
+| CUDA graphs + bf16 | `--graph` | ~2× more games/s for DQN, DDQN, PPO, A2C (REINFORCE ~1.6×) with the same number of updates and similar win rates (20k-game runs). Implies `--amp`. CUDA only |
+| bf16 + channels_last | `--amp` | Off by default. Slower at the default `--batch-size 512` on its own (launch-bound); `--graph` is the way to use it |
 | CPU threads per process | `--threads` | `--parallel` on CPU splits threads automatically |
 
 On an RTX 5070, DQN alone ran at ~17 games/s; all five algorithms with `--parallel` reach ~290 games/s combined.
@@ -102,6 +105,9 @@ Copy `.env.example` to `.env`. Real environment variables take precedence, and c
 |---|---|---|
 | `MINIMAX_DEPTH` | `3` | Search depth (1–8) of the Minimax opponent |
 | `ALPHABETA_DEPTH` | `5` | Search depth (1–8) of the Alpha-Beta opponent |
+| `MCTS_MODELS` | `ddqn,ppo` | Trained models also offered with tree search on the website (`ddqn+mcts`). Empty = none |
+| `MCTS_SIMS` | `100` | Simulations per move (10-1000). About 0.2 s on a modern core, roughly twice that on an old i5 |
+| `MCTS_SOLVE_EMPTIES` | `10` | Solve the game exactly when this many squares are empty (0 = off, max 14) |
 | `ENABLE_TRAINING_MONITOR` | `true` | Show the Training Monitor page and its start/stop APIs. `false` hides the link and returns 404 for them. **Set to `false` on a public deployment.** |
 
 Accepted boolean values: `true` / `false`, `1` / `0`, `yes` / `no`, `on` / `off`.
@@ -129,6 +135,51 @@ The repo includes a `Dockerfile` (CPU-only PyTorch, gunicorn on port 8002) and `
 
 
 Test the image locally with `docker build -t othello-rl .` and `docker run -p 8002:8002 othello-rl`.
+
+## Stronger play: tree search, endgame solver, AlphaZero
+
+The trained networks pick a move in one forward pass. Adding search on top is the biggest single gain:
+
+| Piece | File | What it does |
+|---|---|---|
+| MCTS (PUCT) | `mcts.py` | Searches with the net's policy as prior and its value as the leaf evaluation. Many games are searched at once with numpy arrays, so the same code serves self-play and play. `ppo`, `a2c` and `ddqn` can guide it (`dqn` / `reinforce` have no trained value head) |
+| Endgame solver | `solver.py` | Exact alpha-beta to the end of the game: about 0.1 s for 10 empty squares, 0.7 s for 12. MCTS players switch to it for the last squares (`MCTS_SOLVE_EMPTIES`) |
+| AlphaZero training | `alphazero.py` | Self-play with MCTS, then train the net on the visit counts and results |
+| Strength benchmark | `bench.py` | Plays any players against Alpha-Beta / Minimax in parallel on all cores |
+
+Player specs (used by `bench.py`): `ppo`, `alphabeta:5`, `ddqn+mcts:100` (100 simulations), `ddqn+mcts:200:solve=12`, `weights_az/az+mcts:100` (a path to a checkpoint).
+
+### Strength benchmark
+
+```powershell
+python bench.py --players ddqn,ddqn+mcts:100,ppo,ppo+mcts:100 --opponents alphabeta:3,alphabeta:5 --games 100
+```
+
+Games are played in colour pairs from the same random 8-ply opening. Win rate of the player (draw = 0.5), 100 games per cell, 95% interval about ±9%:
+
+| Player | vs Alpha-Beta depth 3 | vs Alpha-Beta depth 5 |
+|---|---|---|
+| ddqn | 68% | 55% |
+| **ddqn + MCTS (100 sims)** | **99%** | **96%** |
+| ppo | 44% | 46% |
+| **ppo + MCTS (100 sims)** | **87%** | **70%** |
+| a2c + MCTS (100 sims) | 71% | 62% |
+
+One move with 100 simulations takes about 0.16 s on one modern core.
+
+### AlphaZero-style training
+
+```powershell
+python alphazero.py --device cuda --init weights/ppo.pt --save-dir weights_az --log-dir logs_az --hours 3
+python alphazero.py --device cuda --resume --save-dir weights_az --log-dir logs_az      # continue
+```
+
+- Each iteration plays `--games` (128) self-play games of `--sims` (100) simulations in parallel, about 6-7 games/s on an RTX 5070
+- Policy target = root visit counts, value target = `(1 - margin) * result + margin * disc difference / 64` (`--margin`, 0.25)
+- The last `--solve-empties` (8) plies are played with the exact solver, giving perfect labels
+- `--league` (15%) of the games are played against an older snapshot, so the net does not only learn to beat itself
+- Every `--eval-every` iterations the latest net plays the best one (MCTS vs MCTS, random openings); it becomes `<save-dir>/az.pt` only if it wins at least `--gate` (55%)
+- Weights are written to `--save-dir`, never to `weights/`
 
 ## Classic search opponents
 
@@ -161,7 +212,7 @@ Measured at depth 4 on random positions:
 ## Testing
 
 ```powershell
-python -m pytest test.py -q          # unit tests
+python -m pytest test.py test_endgame.py -q   # unit tests
 python test.py --games 400           # tournament: every model vs random, greedy, minimax, alpha-beta and each other
 python test.py --no-search           # faster: leave the (sequential) search agents out
 python test.py --search-games 20 --alphabeta-depth 6
@@ -176,6 +227,11 @@ python test.py --search-games 20 --alphabeta-depth 6
 | `agents.py` | ResNet model, weight save/load, Random / Greedy / Neural agents |
 | `search.py` | Minimax and Alpha-Beta opponents |
 | `training.py` | Self-play training: DQN, DDQN, REINFORCE, A2C, PPO |
+| `mcts.py` | Batched MCTS (PUCT) guided by a network, and the `MCTSAgent` player |
+| `solver.py` | Exact endgame solver |
+| `alphazero.py` | AlphaZero-style self-play training |
+| `bench.py`, `players.py` | Strength benchmark and the player-spec parser |
+| `test_endgame.py` | Tests for the solver, MCTS and the AlphaZero helpers |
 | `play.py` | Terminal play (human vs AI or AI vs AI) |
 | `test.py` | Unit tests and tournament |
 | `app.py`, `web/` | Flask website: game page `/` and training monitor `/monitor` |

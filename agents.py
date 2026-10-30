@@ -64,6 +64,7 @@ class OthelloNet(nn.Module):
     def __init__(self, channels: int = 64, blocks: int = 4, dueling: bool = False):
         super().__init__()
         self.dueling = dueling
+        self.channels_last = False  # set by the trainer with --amp: tensor cores like NHWC
         # No BatchNorm: it behaves differently in train / eval mode, which breaks
         # PPO's probability ratios and makes self-play targets drift.
         self.stem = nn.Sequential(nn.Conv2d(3, channels, 3, padding=1), nn.ReLU())
@@ -74,6 +75,8 @@ class OthelloNet(nn.Module):
         self.value_fc = nn.Sequential(nn.Linear(64, 128), nn.ReLU(), nn.Linear(128, 1), nn.Tanh())
 
     def forward(self, x):
+        if self.channels_last:
+            x = x.contiguous(memory_format=torch.channels_last)
         h = self.body(self.stem(x))
         head = self.head_fc(self.head_conv(h).flatten(1))
         value = self.value_fc(self.value_conv(h).flatten(1)).squeeze(-1)

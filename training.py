@@ -134,9 +134,16 @@ class Trainer:
         self.lr = args.lr or DEFAULT_LR[algo]
         args.lr = self.lr
         # fused Adam = one CUDA kernel per step instead of several per parameter tensor
-        self.opt = torch.optim.Adam(self.net.parameters(), lr=self.lr, fused=device.type == "cuda")
+        self.graph_on = bool(getattr(args, "graph", False) and device.type == "cuda")
+        self.opt = torch.optim.Adam(self.net.parameters(), lr=self.lr, fused=device.type == "cuda",
+                                    capturable=self.graph_on)
         torch.backends.cudnn.benchmark = self.fixed_shapes and device.type == "cuda"
-        self.amp = bool(args.amp and device.type == "cuda")
+        # bf16 only pays off inside a graphed update; REINFORCE's batch size varies, so it stays fp32
+        self.amp = bool((args.amp or (self.graph_on and algo != "reinforce")) and device.type == "cuda")
+        self.infer_graphs = {}
+        if self.amp:
+            self.net.channels_last = True
+            self.net.to(memory_format=torch.channels_last)
         self.rng = np.random.default_rng(args.seed)
         self.games = 0
         self.best_score = -1.0
@@ -161,6 +168,30 @@ class Trainer:
 
     def to_obs(self, obs_np: np.ndarray) -> torch.Tensor:
         return torch.from_numpy(obs_np).to(self.device, non_blocking=True).float()
+
+    def infer(self, obs: torch.Tensor):
+        """Network forward without gradients; a CUDA graph per batch size when --graph is on."""
+        if not self.graph_on:
+            with torch.no_grad(), self.autocast():
+                return self.net(obs)
+        entry = self.infer_graphs.get(obs.shape[0])
+        if entry is None:
+            static = obs.clone()
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side), torch.no_grad(), self.autocast():
+                for _ in range(3):
+                    self.net(static)
+            torch.cuda.current_stream().wait_stream(side)
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            with torch.no_grad(), self.autocast(), torch.cuda.graph(graph):
+                out = self.net(static)
+            entry = self.infer_graphs[obs.shape[0]] = (graph, static, out)
+        graph, static, out = entry
+        static.copy_(obs)
+        graph.replay()
+        return tuple(o.clone() for o in out)
 
     def optimize(self, loss: torch.Tensor, max_norm: float):
         self.opt.zero_grad(set_to_none=True)
@@ -266,6 +297,7 @@ class ReplayBuffer:
         self.done = torch.zeros(capacity, device=device)
         self.same = torch.zeros(capacity, device=device)  # 1 if the same player moves next (opponent passed)
         self.size = self.pos = 0
+        self.size_t = torch.zeros((), device=device)  # = size, as a tensor so CUDA graphs can read it
 
     def add(self, obs, act, rew, next_obs, done, same):
         n = len(act)
@@ -279,9 +311,10 @@ class ReplayBuffer:
         self.same[idx] = t(same.astype(np.float32))
         self.pos = (self.pos + n) % self.capacity
         self.size = min(self.size + n, self.capacity)
+        self.size_t.fill_(self.size)
 
     def sample(self, n: int):
-        idx = torch.randint(0, self.size, (n,), device=self.device)
+        idx = torch.minimum((torch.rand(n, device=self.device) * self.size_t).long(), (self.size_t - 1).long())
         return (self.obs[idx].float(), self.act[idx], self.rew[idx], self.next_obs[idx].float(),
                 self.done[idx], self.same[idx])
 
@@ -298,6 +331,10 @@ class DQNTrainer(Trainer):
         self.buffer = ReplayBuffer(args.buffer_size, device)
         self.venv = VecOthello(args.n_envs, seed=args.seed)
         self.perms = torch.as_tensor(np.stack(SYM_PERMS), device=device)
+        # square index maps that reproduce transform_obs(x, sym) as one gather (CUDA-graph friendly)
+        squares = torch.arange(64, device=device).view(1, 1, 8, 8)
+        self.obs_idx = torch.stack([transform_obs(squares, k).reshape(-1) for k in range(8)])
+        self.graph = None
         self.updates = 0
         self.update_credit = 0.0
 
@@ -311,8 +348,7 @@ class DQNTrainer(Trainer):
         eps = self.epsilon()
         obs_np, mask = v.observation(), v.legal_mask()
         obs = self.to_obs(obs_np)
-        with torch.no_grad(), self.autocast():
-            q, _ = self.net(obs)
+        q, _ = self.infer(obs)
         greedy = masked(q.float(), obs_mask(obs)).argmax(1).cpu().numpy()
         explore = self.rng.random(v.n) < eps
         act = np.where(explore, random_actions(mask, self.rng), greedy)
@@ -333,12 +369,43 @@ class DQNTrainer(Trainer):
         return int(ended.sum()), v.n, info
 
     def update(self) -> torch.Tensor:
+        if self.graph_on and self.graph is None:
+            self.capture_graph()
+        if self.graph is None:
+            loss = self.update_step()
+        else:
+            self.graph.replay()
+            loss = self.graph_loss.clone()  # the static output is overwritten by the next replay
+
+        self.updates += 1
+        if self.updates % self.args.target_update == 0:
+            self.target.load_state_dict(self.net.state_dict())
+        return loss
+
+    def capture_graph(self):
+        """Record one whole gradient step (sample, forward, backward, clip, Adam) as a CUDA graph.
+        Replaying it skips ~hundreds of Python-side kernel launches, the bottleneck at batch 512."""
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):  # warm-up: cudnn autotune and Adam state must exist before capture
+            for _ in range(3):
+                self.update_step()
+        torch.cuda.current_stream().wait_stream(side)
+        torch.cuda.synchronize()
+        graph = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(graph):
+            self.graph_loss = self.update_step()
+        self.graph = graph
+
+    def update_step(self) -> torch.Tensor:
         a = self.args
         o, act, r, no, d, same = self.buffer.sample(a.batch_size)
-        sym = random.randrange(8)  # random board symmetry as data augmentation
-        if sym:
-            o, no = transform_obs(o, sym), transform_obs(no, sym)
-            act = self.perms[sym][act]
+        # random board symmetry as data augmentation, drawn on the device so it can live inside a graph
+        sym = torch.randint(0, 8, (1,), device=self.device)
+        ix = self.obs_idx.index_select(0, sym).squeeze(0)
+        o = o.flatten(2).index_select(2, ix).view_as(o)
+        no = no.flatten(2).index_select(2, ix).view_as(no)
+        act = self.perms.index_select(0, sym).squeeze(0)[act]
 
         with self.autocast():
             q, _ = self.net(o)
@@ -358,10 +425,6 @@ class DQNTrainer(Trainer):
             target = r + a.gamma * (1 - d) * sign * q_next
         loss = F.smooth_l1_loss(q_sa, target)
         self.optimize(loss, 10.0)
-
-        self.updates += 1
-        if self.updates % a.target_update == 0:
-            self.target.load_state_dict(self.net.state_dict())
         return loss.detach()
 
 
@@ -390,11 +453,11 @@ def signed_gae(rew, val, next_val, player, next_player, cont, gamma: float, lam:
 
 class PolicyGradientTrainer(Trainer):
     epochs = 1
+    graph = None
     minibatches = False  # True: shuffled --batch-size minibatches (PPO); False: one gradient step per rollout
 
     def act(self, obs: torch.Tensor):
-        with torch.no_grad(), self.autocast():
-            logits, val = self.net(obs)
+        logits, val = self.infer(obs)
         logits = masked(logits.float(), obs_mask(obs))
         act = sample_actions(logits)
         logp = torch.log_softmax(logits, 1).gather(1, act[:, None]).squeeze(1)
@@ -435,31 +498,66 @@ class PolicyGradientTrainer(Trainer):
     def loss(self, mb, logp, ent, value):
         raise NotImplementedError
 
+    def step_on(self, mb) -> dict[str, torch.Tensor]:
+        """One gradient step on a (mini)batch; the returned metrics stay on the GPU."""
+        obs = mb["obs"].float()
+        with self.autocast():
+            logits, value = self.net(obs)
+        # same maths as Categorical(logits).log_prob / .entropy, without its validation syncs
+        # (a sync cannot be captured in a CUDA graph)
+        logp_all = torch.log_softmax(masked(logits.float(), obs_mask(obs)), 1)
+        logp = logp_all.gather(1, mb["act"].unsqueeze(1)).squeeze(1)
+        ent = -(logp_all.exp() * logp_all.clamp(min=torch.finfo(logp_all.dtype).min)).sum(1)
+        loss, parts = self.loss(mb, logp, ent, value.float())
+        self.optimize(loss, self.args.max_grad_norm)
+        return {"loss": loss.detach(), "entropy": ent.mean().detach(), **parts}
+
+    def graphed_step(self, mb) -> dict[str, torch.Tensor]:
+        """step_on as a CUDA graph for batches of the captured size (PPO minibatches, A2C rollouts);
+        any other size (the last partial minibatch, REINFORCE) runs eagerly."""
+        if not self.graph_on or not (self.minibatches or self.algo == "a2c"):
+            return self.step_on(mb)
+        n = mb["act"].shape[0]
+        if self.graph is None:
+            if n != (self.args.batch_size if self.minibatches else self.args.n_envs * self.args.n_steps):
+                return self.step_on(mb)
+            self.static = {k: v.clone() for k, v in mb.items()}
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):  # warm-up before capture; these are real updates on this batch
+                for _ in range(3):
+                    self.step_on(self.static)
+            torch.cuda.current_stream().wait_stream(side)
+            torch.cuda.synchronize()
+            self.graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(self.graph):
+                self.graph_out = self.step_on(self.static)
+        elif n != self.static["act"].shape[0]:
+            return self.step_on(mb)
+        for k, v in mb.items():
+            self.static[k].copy_(v)
+        self.graph.replay()
+        return {k: v.clone() for k, v in self.graph_out.items()}
+
     def train_iteration(self):
         b, games = self.collect()
         n = b["act"].shape[0]
         size = self.args.batch_size if self.minibatches else n
-        totals: dict[str, list] = {}
+        totals: dict[str, list] = {}  # per-minibatch metrics stay on the GPU: .item() would sync every step
         for _ in range(self.epochs):
             perm = torch.randperm(n, device=self.device)
-            early_stop = False
+            epoch_kl = []
             for start in range(0, n, size):
                 mb = {k: v[perm[start:start + size]] for k, v in b.items()} if self.minibatches else b
-                obs = mb["obs"].float()
-                with self.autocast():
-                    logits, value = self.net(obs)
-                dist = Categorical(logits=masked(logits.float(), obs_mask(obs)))
-                logp, ent = dist.log_prob(mb["act"]), dist.entropy()
-                loss, parts = self.loss(mb, logp, ent, value.float())
-                self.optimize(loss, self.args.max_grad_norm)
-                for k, val in {"loss": loss.item(), "entropy": ent.mean().item(), **parts}.items():
+                out = self.graphed_step(mb)
+                for k, val in out.items():
                     totals.setdefault(k, []).append(val)
-                if parts.get("kl", 0.0) > self.args.target_kl:  # PPO: policy moved too far, stop this rollout
-                    early_stop = True
-                    break
-            if early_stop:
+                if "kl" in out:
+                    epoch_kl.append(out["kl"])
+            # PPO: stop after the epoch in which the policy moved too far (one sync per epoch)
+            if epoch_kl and torch.stack(epoch_kl).mean().item() > self.args.target_kl:
                 break
-        return games, n, {k: float(np.mean(v)) for k, v in totals.items()}
+        return games, n, {k: torch.stack(v).mean().item() for k, v in totals.items()}
 
 
 class ReinforceTrainer(PolicyGradientTrainer):
@@ -510,7 +608,7 @@ class A2CTrainer(PolicyGradientTrainer):
     def loss(self, mb, logp, ent, value):
         v_loss = F.mse_loss(value, mb["ret"])
         loss = -(logp * mb["adv"]).mean() + self.args.vf_coef * v_loss - self.args.ent_coef * ent.mean()
-        return loss, {"v_loss": v_loss.item()}
+        return loss, {"v_loss": v_loss.detach()}
 
 
 class PPOTrainer(PolicyGradientTrainer):
@@ -527,7 +625,7 @@ class PPOTrainer(PolicyGradientTrainer):
         pg_loss = -torch.min(ratio * adv, ratio.clamp(1 - a.clip, 1 + a.clip) * adv).mean()
         v_loss = F.mse_loss(value, mb["ret"])
         loss = pg_loss + a.vf_coef * v_loss - a.ent_coef * ent.mean()
-        return loss, {"v_loss": v_loss.item(), "kl": (mb["logp"] - logp).mean().item()}
+        return loss, {"v_loss": v_loss.detach(), "kl": (mb["logp"] - logp).mean().detach()}
 
 
 TRAINERS = {
@@ -557,6 +655,8 @@ def parse_args(argv=None):
     p.add_argument("--n-envs", type=int, default=None, help="games played in parallel (default per algorithm)")
     p.add_argument("--parallel", action="store_true", help="train the selected algorithms simultaneously")
     p.add_argument("--amp", action="store_true", help="bfloat16 autocast on CUDA")
+    p.add_argument("--graph", action="store_true",
+                   help="CUDA graphs for the gradient step (implies --amp): fewer, same-size updates run ~2.5x faster")
     p.add_argument("--threads", type=int, default=0, help="torch CPU threads per process (0 = default)")
     p.add_argument("--lr", type=float, default=None, help="learning rate (default per algorithm)")
     p.add_argument("--gamma", type=float, default=0.99)

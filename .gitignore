@@ -5,3 +5,5 @@ logs/
 weights/*_last.pt
 Screenshot*.png
 test.txt
+weights_*/
+logs_*/

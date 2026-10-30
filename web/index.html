@@ -36,6 +36,12 @@
         <div class="board" id="board" role="grid" aria-label="Othello board"></div>
       </div>
       <div class="toast" id="toast" aria-live="polite"></div>
+      <div class="card eval">
+        <h2>AI evaluation</h2>
+        <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
+        <div class="meter-label"><span>You ahead</span><span id="meter-text">—</span><span>AI ahead</span></div>
+        <div class="meter-info" id="meter-info"></div>
+      </div>
     </section>
 
     <aside class="panel">
@@ -55,13 +61,6 @@
           <button id="btn-undo">Undo</button>
         </div>
         <label class="toggle"><input type="checkbox" id="chk-hint"> <span>Show model hints</span></label>
-      </div>
-
-      <div class="card">
-        <h2>AI evaluation</h2>
-        <div class="meter"><div class="meter-fill" id="meter-fill"></div></div>
-        <div class="meter-label"><span>You ahead</span><span id="meter-text">—</span><span>AI ahead</span></div>
-        <div class="meter-info" id="meter-info"></div>
       </div>
 
       <div class="card grow">

@@ -136,9 +136,16 @@ function searchLabel(v) {
 }
 
 function showSearchStats(stats) {
-  el("meter-info").textContent = stats
-    ? `Searched ${stats.nodes.toLocaleString()} positions in ${Math.round(stats.ms)} ms (depth ${stats.depth})`
-    : "";
+  let text = "";
+  if (stats && stats.solved) {
+    const e = stats.exact;
+    text = `Endgame solved exactly in ${Math.round(stats.ms)} ms: ${e > 0 ? "AI wins by " + e : e < 0 ? "AI loses by " + -e : "draw"} with perfect play`;
+  } else if (stats && stats.sims !== undefined) {
+    text = stats.sims ? `Tree search: ${stats.sims} simulations in ${Math.round(stats.ms)} ms` : "";
+  } else if (stats) {
+    text = `Searched ${stats.nodes.toLocaleString()} positions in ${Math.round(stats.ms)} ms (depth ${stats.depth})`;
+  }
+  el("meter-info").textContent = text;
 }
 
 function showHints(analysis) {
@@ -153,6 +160,7 @@ function showHints(analysis) {
     tag.style.background = `rgba(255,255,255,${0.45 + 0.5 * t})`;
     tag.textContent = analysis.kind === "prob" ? Math.round(v * 100) + "%"
       : analysis.kind === "eval" ? searchLabel(v)
+      : analysis.kind === "disc" ? (v > 0 ? "+" : "") + Math.round(v)
       : (v >= 0 ? "+" : "") + v.toFixed(2);
     cells[i].appendChild(tag);
   }
@@ -262,33 +270,47 @@ async function loadModels() {
   const list = await api("/api/models");
   const box = el("models");
   box.innerHTML = "";
-  const trained = list.filter((m) => !["baseline", "search"].includes(m.algo) && !m.error);
+  const trained = list.filter((m) => !["baseline", "search", "mcts"].includes(m.algo) && !m.error);
   if (!trained.length) {
     const p = document.createElement("p");
     p.className = "empty";
     p.innerHTML = "No trained weights yet — train first with<br><code>python training.py --algo all</code><br>You can play the baselines meanwhile.";
     box.appendChild(p);
   }
-  for (const m of list) {
-    if (m.error) continue;
-    const b = document.createElement("button");
-    b.className = "model";
-    b.dataset.id = m.id;
-    const stat = m.algo === "baseline" ? ""
-      : m.algo === "search" ? `<span class="stat">depth <b>${m.depth}</b></span>` :
-      `<span class="stat">vs random <b>${pct(m.vs_random)}</b><br>vs greedy <b>${pct(m.vs_greedy)}</b></span>`;
-    b.innerHTML = `<span class="id">${m.id}</span>${stat}<span class="label">${m.label}${m.games ? " · " + m.games.toLocaleString() + " games" : ""}</span>`;
-    b.addEventListener("click", () => selectModel(m.id));
-    box.appendChild(b);
+  const groups = [
+    ["Trained networks", (m) => !["baseline", "search", "mcts"].includes(m.algo)],
+    ["Networks with tree search", (m) => m.algo === "mcts"],
+    ["Classic opponents", (m) => ["baseline", "search"].includes(m.algo)],
+  ];
+  for (const [title, belongs] of groups) {
+    const members = list.filter((m) => !m.error && belongs(m));
+    if (!members.length) continue;
+    const group = document.createElement("section");
+    group.className = "model-group";
+    group.innerHTML = `<h3>${title}</h3><div class="model-grid"></div>`;
+    for (const m of members) {
+      const b = document.createElement("button");
+      b.className = "model";
+      b.dataset.id = m.id;
+      b.title = m.label + (m.games ? " · " + m.games.toLocaleString() + " games" : "");
+      const stat = m.algo === "mcts" ? `<b>${m.sims}</b> simulations`
+        : m.algo === "search" ? `depth <b>${m.depth}</b>`
+        : m.algo === "baseline" ? (m.id === "greedy" ? "one-move lookahead" : "random moves")
+        : `vs greedy <b>${pct(m.vs_greedy)}</b>`;
+      const level = m.level ? `<span class="level ${m.level}">${m.level}</span>` : "";
+      b.innerHTML = `<span class="top"><span class="id">${m.id}</span>${level}</span><span class="stat">${stat}</span>`;
+      b.addEventListener("click", () => selectModel(m.id));
+      group.querySelector(".model-grid").appendChild(b);
+    }
+    box.appendChild(group);
   }
-  const saved = localStorageGet("othello.model");
+  // every visit starts with PPO+MCTS (or PPO when tree search is off); the last choice is not remembered
   const ids = list.filter((m) => !m.error).map((m) => m.id);
-  selectModel(ids.includes(saved) ? saved : (ids.includes("ppo") ? "ppo" : ids[0]), false);
+  selectModel(["ppo+mcts", "ppo"].find((id) => ids.includes(id)) || ids[0], false);
 }
 
 function selectModel(id, restart = true) {
   S.model = id;
-  localStorageSet("othello.model", id);
   document.querySelectorAll(".model").forEach((b) => b.classList.toggle("active", b.dataset.id === id));
   if (restart) newGame();
 }

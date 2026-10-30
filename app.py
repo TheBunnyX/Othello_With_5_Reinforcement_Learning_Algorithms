@@ -11,6 +11,9 @@ Settings come from environment variables or a .env file next to this script
     ENABLE_TRAINING_MONITOR=true   show the Training Monitor menu, page and training APIs
     MINIMAX_DEPTH=3                search depth of the Minimax opponent (1-8)
     ALPHABETA_DEPTH=5              search depth of the Alpha-Beta opponent (1-8)
+    MCTS_MODELS=ddqn,ppo           trained models offered with MCTS ("ddqn+mcts"); empty = none
+    MCTS_SIMS=100                  MCTS simulations per move (10-1000)
+    MCTS_SOLVE_EMPTIES=10          solve the game exactly when this many squares are empty (0 = off)
 """
 from __future__ import annotations
 
@@ -31,6 +34,7 @@ from flask import Flask, abort, jsonify, request, send_from_directory
 
 from agents import ALGO_NAMES, ALGORITHMS, GreedyAgent, NeuralAgent, RandomAgent, get_device
 from env import NUM_ACTIONS, OthelloEnv, square_name
+from mcts import MCTSAgent
 from search import SEARCH_AGENTS, MinimaxAgent, make_search_agent
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
@@ -103,7 +107,38 @@ def search_depth(algo: str) -> int:
         return default
 
 
+# Difficulty shown next to each opponent, from bench.py results against Alpha-Beta (README, Strength benchmark):
+#   easy    loses to or barely beats the greedy heuristic
+#   medium  beats greedy clearly but loses to Alpha-Beta depth 3 about as often as it wins
+#   hard    at least on par with Alpha-Beta depth 5
+LEVELS = {"random": "easy", "greedy": "easy", "dqn": "easy", "reinforce": "easy",
+          "a2c": "medium", "ppo": "medium", "ddqn": "hard", "ppo+mcts": "hard", "ddqn+mcts": "hard"}
+
+
+def level_for_depth(depth: int) -> str:
+    return "easy" if depth <= 2 else "medium" if depth <= 4 else "hard"
+
+
+def setting_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        return max(low, min(high, int(setting(name, str(default)))))
+    except ValueError:
+        return default
+
+
+def mcts_models() -> list[str]:
+    """Trained models that are also offered as '<model>+mcts' (MCTS_MODELS in .env)."""
+    wanted = [m.strip().lower() for m in setting("MCTS_MODELS", "ddqn,ppo").split(",") if m.strip()]
+    return [m for m in wanted if m in weight_files() and not m.endswith("_last")]
+
+
 def get_agent(model: str):
+    if model.endswith("+mcts"):  # a fresh agent per request: it keeps per-search stats; the network is shared
+        base = model[:-len("+mcts")]
+        if base not in mcts_models():
+            abort(404, f"unknown model {model!r}")
+        return MCTSAgent(get_agent(base), setting_int("MCTS_SIMS", 100, 10, 1000),
+                         solve_empties=setting_int("MCTS_SOLVE_EMPTIES", 10, 0, 14), name=model)
     if model in SEARCH_AGENTS:  # cheap to build; depth follows .env
         return make_search_agent(model, search_depth(model))
     if model == "random":
@@ -168,6 +203,13 @@ def think(agent, env: OthelloEnv):
         move = random.choice([m for m, v in scores.items() if v == best])
         return move, {"value": math.tanh(best / 150), "kind": "eval", "stats": stats,
                       "scores": {int(m): float(v) for m, v in scores.items()}}
+    if isinstance(agent, MCTSAgent):
+        scores, value, stats = agent.evaluate(env)
+        best = max(scores.values())
+        move = random.choice([m for m, v in scores.items() if v == best])
+        # visit shares ("prob") from the search, or exact final disc differences ("disc") from the solver
+        return move, {"value": value, "kind": "disc" if stats["solved"] else "prob", "stats": stats,
+                      "scores": {int(m): float(v) for m, v in scores.items()}}
     if isinstance(agent, NeuralAgent):
         return agent.select_action(env), analysis_for(agent, env)
     return agent.select_action(env), None
@@ -207,11 +249,16 @@ def models():
             "games": s.get("games"),
             "vs_random": s.get("vs_random"),
             "vs_greedy": s.get("vs_greedy"),
+            "level": LEVELS.get(name, "medium"),
         })
-    out += [{"id": algo, "algo": "search", "label": cls.label, "depth": search_depth(algo)}
+    out += [{"id": f"{m}+mcts", "algo": "mcts", "label": f"{ALGO_NAMES.get(m, m)} + tree search",
+             "sims": setting_int("MCTS_SIMS", 100, 10, 1000), "level": LEVELS.get(f"{m}+mcts", "hard")}
+            for m in mcts_models()]
+    out += [{"id": algo, "algo": "search", "label": cls.label, "depth": search_depth(algo),
+             "level": level_for_depth(search_depth(algo))}
             for algo, cls in SEARCH_AGENTS.items()]
-    out += [{"id": "greedy", "algo": "baseline", "label": "Greedy heuristic"},
-            {"id": "random", "algo": "baseline", "label": "Random mover"}]
+    out += [{"id": "greedy", "algo": "baseline", "label": "Greedy heuristic", "level": "easy"},
+            {"id": "random", "algo": "baseline", "label": "Random mover", "level": "easy"}]
     return jsonify(out)
 
 

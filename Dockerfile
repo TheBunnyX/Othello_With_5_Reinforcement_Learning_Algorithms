@@ -9,7 +9,7 @@ WORKDIR /app
 COPY requirements-server.txt .
 RUN pip install -r requirements-server.txt
 
-COPY agents.py app.py env.py search.py vec_env.py gunicorn.conf.py ./
+COPY agents.py app.py env.py mcts.py search.py solver.py vec_env.py gunicorn.conf.py ./
 COPY web ./web
 COPY weights ./weights
 
